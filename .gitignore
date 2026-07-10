@@ -1,1 +1,4 @@
 .supermemory/
+.env.local
+.env
+.env.*
