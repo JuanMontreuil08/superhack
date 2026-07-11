@@ -38,6 +38,7 @@ async def evaluate_chunk(client: httpx.AsyncClient, chunk: str) -> dict | None:
                 "q": chunk,
                 "limit": 1,
                 "rerank": True,
+                "rewriteQuery": True,
                 "searchMode": "hybrid",
                 "containerTag": SUPERMEMORY_CONTAINER,
             },

@@ -206,7 +206,16 @@ async function handleSync() {
 
 // ── Extracción de chunks ──────────────────────────────────────────────────────
 function extractChunks() {
-  const selectors = 'p, h1, h2, h3, li, td, blockquote, article';
+  // Selectores site-specific para SPAs que no usan HTML semántico estándar
+  const siteSelectors = {
+    'twitter.com': '[data-testid="tweetText"]',
+    'x.com': '[data-testid="tweetText"]',
+    'linkedin.com': '.feed-shared-update-v2__description, .feed-shared-text',
+    'reddit.com': '[data-click-id="text"] p, .Post h3',
+  };
+  const host = window.location.hostname.replace('www.', '');
+  const siteSelector = Object.entries(siteSelectors).find(([k]) => host.includes(k))?.[1];
+  const selectors = siteSelector || 'p, h1, h2, h3, li, td, blockquote, article';
   const elements = document.querySelectorAll(selectors);
   const seen = new Set();
   const chunks = [];
