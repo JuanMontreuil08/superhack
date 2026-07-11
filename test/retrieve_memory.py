@@ -18,7 +18,7 @@ client = Supermemory(
 CONTAINER_TAG = "hackathon_test_user"
 
 queries = [
-    "recent trips",
+    "Have I traveled to San Francisco before?",
     "favorite coding assistants"
 ]
 
