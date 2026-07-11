@@ -108,7 +108,7 @@ async def ingest_github():
 
         return {
             "ok": True,
-            "repos": stats.get("repos", 0),
+            "repos": stats.get("repos", 0) + stats.get("readmes", 0),
             "commits": stats.get("commits", 0),
             "readmes": stats.get("readmes", 0),
             "issues": stats.get("issues", 0),

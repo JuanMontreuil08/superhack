@@ -175,10 +175,16 @@ async def main():
             pushed = format_date(repo.get("pushed_at", ""))
             is_fork = repo.get("fork", False)
 
-            # Saltar repos sin descripción ni topics — poco valor semántico
+            # Sin descripción ni topics: intentar README antes de continuar
             if not desc and not topics:
-                print(f"  ✗ skip repo: {full_name} (sin descripción ni topics)")
-                # Igual guardamos sus commits si los tiene
+                readme = await fetch_readme(client, full_name)
+                if readme:
+                    readme_text = f"README de {name}:\n{readme}"
+                    if save_memory(readme_text, f"readme_{safe_name}"):
+                        stats["readmes"] += 1
+                        print(f"  ✓ readme: {full_name} (sin desc pero tiene README)")
+                else:
+                    print(f"  ✗ skip: {full_name} (sin desc, topics ni README)")
                 commits = await fetch_commits(client, full_name)
                 for commit in commits:
                     sha = commit.get("sha", "")[:7]
@@ -190,7 +196,7 @@ async def main():
                     if save_memory(commit_text, f"commit_{safe_name}_{sha}"):
                         stats["commits"] += 1
                 if commits:
-                    print(f"    → {len([c for c in commits])} commits procesados")
+                    print(f"    → commits guardados")
                 continue
 
             # Repo base
@@ -290,7 +296,7 @@ async def main():
                 f"Descripción: {desc}. "
                 f"Lenguaje: {lang}. "
                 + (f"Topics: {topics}. " if topics else "")
-                f"Estrellas totales: {stars}."
+                + f"Estrellas totales: {stars}."
             )
             safe_name = sanitize_id(name.replace("/", "-"))
             if save_memory(text, f"starred_{safe_name}"):
@@ -301,7 +307,8 @@ async def main():
     # ── Resumen ────────────────────────────────────────────────────────────
     print("\n" + "=" * 50)
     print("✅ Ingesta completa:")
-    print(f"   📦 {stats['repos']} repositorios guardados")
+    total_repos = stats['repos'] + stats['readmes']
+    print(f"   📦 {total_repos} repositorios procesados ({stats['repos']} con desc + {stats['readmes']} via README)")
     print(f"   📝 {stats['commits']} commits almacenados")
     print(f"   📖 {stats['readmes']} READMEs guardados")
     print(f"   🐛 {stats['issues']} issues guardados")

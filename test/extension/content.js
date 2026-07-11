@@ -158,15 +158,20 @@ async function handleSync() {
     if (data.ok) {
       const total = (data.repos || 0) + (data.commits || 0) + (data.readmes || 0) + (data.starred || 0) + (data.prs || 0);
       btn.textContent = '⏳ Procesando memorias...';
+      // Expandir panel para mostrar progreso
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) panel.style.width = '300px';
       status.innerHTML = `
-        <div style="color:#3fb950;line-height:1.8;margin-bottom:8px">
-          📦 ${data.repos} repos · 📝 ${data.commits} commits<br>
+        <div style="color:#3fb950;line-height:1.8;margin-bottom:10px;font-size:12px">
+          📦 ${data.repos} repos guardados<br>
+          📝 ${data.commits} commits almacenados<br>
           📖 ${data.readmes} READMEs · ⭐ ${data.starred} starred
         </div>
-        <div id="ml-queue-bar" style="background:#21262d;border-radius:4px;height:6px;overflow:hidden;margin-bottom:4px">
-          <div id="ml-queue-fill" style="background:#1f6feb;height:100%;width:0%;transition:width 0.5s"></div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:6px">Supermemory procesando ${total} fragmentos...</div>
+        <div style="background:#21262d;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px">
+          <div id="ml-queue-fill" style="background:#1f6feb;height:100%;width:5%;transition:width 0.8s ease"></div>
         </div>
-        <div id="ml-queue-label" style="color:#8b949e;font-size:11px">Supermemory procesando ${total} fragmentos...</div>
+        <div id="ml-queue-label" style="color:#8b949e;font-size:11px">Iniciando procesamiento...</div>
       `;
       pollQueueStatus(total);
     } else {
