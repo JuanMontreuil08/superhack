@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "MemoryLayer",
+  "version": "0.1",
+  "description": "Personaliza GitHub con tu memoria local de Supermemory",
+  "permissions": ["activeTab"],
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
