@@ -12,7 +12,7 @@ load_dotenv(dotenv_path=".env.local")
 SUPERMEMORY_URL = os.getenv("SUPERMEMORY_BASE_URL", "http://localhost:6767")
 SUPERMEMORY_API_KEY = os.getenv("SUPERMEMORY_API_KEY", "")
 SUPERMEMORY_CONTAINER = os.getenv("SUPERMEMORY_CONTAINER", "hackathon_test_user")
-THRESHOLD = 0.82  # similaridad mínima para resaltar
+THRESHOLD = 0.75  # similaridad mínima para resaltar
 
 app = FastAPI()
 
@@ -44,32 +44,37 @@ async def evaluate_chunk(client: httpx.AsyncClient, chunk: str) -> dict | None:
             timeout=5.0,
         )
         results = resp.json().get("results", [])
-        if results and results[0].get("similarity", 0) >= THRESHOLD:
-            top = results[0]
-            memory_text = top.get("memory") or top.get("chunk", "")
-            # Filtra memorias genéricas que generan falsos positivos
-            if len(memory_text) < 30:
-                return None
-            generic_patterns = [
-                "user's name is",
-                "The user has",
-                "has public GitHub",
-                "is a member of the GitHub organization",
-                "belongs to the organization",
-                "The user belongs",
-                "user is located",
-                "user works at",
-                "The user's bio",
-            ]
-            if any(p in memory_text for p in generic_patterns):
-                return None
-            return {
-                "text": chunk,
-                "score": round(top["similarity"], 2),
-                "memory": memory_text,
-            }
-    except Exception:
-        pass
+        if not results:
+            return None
+        top = results[0]
+        score = top.get("similarity", 0)
+        print(f"  score={score:.3f} | chunk={chunk[:60]!r}")
+        if score < THRESHOLD:
+            return None
+        memory_text = top.get("memory") or top.get("chunk", "")
+        # Filtra memorias genéricas que generan falsos positivos
+        if len(memory_text) < 30:
+            return None
+        generic_patterns = [
+            "user's name is",
+            "The user has",
+            "has public GitHub",
+            "is a member of the GitHub organization",
+            "belongs to the organization",
+            "The user belongs",
+            "user is located",
+            "user works at",
+            "The user's bio",
+        ]
+        if any(p in memory_text for p in generic_patterns):
+            return None
+        return {
+            "text": chunk,
+            "score": round(score, 2),
+            "memory": memory_text,
+        }
+    except Exception as e:
+        print(f"  ERROR: {e}")
     return None
 
 

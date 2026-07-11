@@ -9,6 +9,7 @@ const MODAL_ID = 'ml-modal';
 // ── Estado ──────────────────────────────────────────────────────────────────
 let active = false;
 let highlighted = [];
+let currentHighlightIndex = -1;
 
 // ── Toggle button ────────────────────────────────────────────────────────────
 function injectToggle() {
@@ -69,6 +70,17 @@ function injectPanel() {
       cursor:pointer;transition:background 0.2s
     ">🔍 Analizar esta página</button>
     <div id="ml-analyze-status" style="font-size:12px;color:#8b949e;margin-top:8px;min-height:20px"></div>
+    <div id="ml-nav" style="display:none;align-items:center;gap:8px;margin-top:8px">
+      <span id="ml-nav-label" style="font-size:12px;color:#e6edf3;flex:1"></span>
+      <button id="ml-nav-up" title="Anterior" style="
+        background:#21262d;border:1px solid #30363d;color:#e6edf3;
+        border-radius:6px;padding:4px 10px;font-size:14px;cursor:pointer;line-height:1
+      ">↑</button>
+      <button id="ml-nav-down" title="Siguiente" style="
+        background:#21262d;border:1px solid #30363d;color:#e6edf3;
+        border-radius:6px;padding:4px 10px;font-size:14px;cursor:pointer;line-height:1
+      ">↓</button>
+    </div>
   `;
   panel.style.cssText = `
     position: fixed;
@@ -93,6 +105,8 @@ function injectPanel() {
   document.getElementById('ml-panel-close').addEventListener('click', closePanel);
   document.getElementById('ml-sync-btn').addEventListener('click', handleSync);
   document.getElementById('ml-analyze-btn').addEventListener('click', analyzePage);
+  document.getElementById('ml-nav-up').addEventListener('click', () => navigateHighlight(-1));
+  document.getElementById('ml-nav-down').addEventListener('click', () => navigateHighlight(1));
 
   // Animar entrada
   requestAnimationFrame(() => {
@@ -247,6 +261,13 @@ async function analyzePage() {
     } else {
       status.textContent = `✨ ${hits.length} fragmentos relevantes encontrados`;
       applyHighlights(chunks, hits);
+      // Show navigation
+      const nav = document.getElementById('ml-nav');
+      const label = document.getElementById('ml-nav-label');
+      if (nav && label) {
+        label.textContent = `0 / ${hits.length}`;
+        nav.style.display = 'flex';
+      }
     }
   } catch (e) {
     status.textContent = '❌ Error conectando al backend';
@@ -298,8 +319,33 @@ function clearHighlights() {
     }
   }
   highlighted = [];
+  currentHighlightIndex = -1;
   const modal = document.getElementById(MODAL_ID);
   if (modal) modal.remove();
+  const nav = document.getElementById('ml-nav');
+  if (nav) nav.style.display = 'none';
+}
+
+function navigateHighlight(direction) {
+  if (!highlighted.length) return;
+  // Remove focus ring from current
+  if (currentHighlightIndex >= 0) {
+    const prev = highlighted[currentHighlightIndex].querySelector('mark[data-memory]');
+    if (prev) prev.style.outline = 'none';
+  }
+  currentHighlightIndex = (currentHighlightIndex + direction + highlighted.length) % highlighted.length;
+  const el = highlighted[currentHighlightIndex];
+  const mark = el.querySelector('mark[data-memory]');
+  if (mark) {
+    mark.style.outline = '2px solid #1f6feb';
+    mark.style.outlineOffset = '2px';
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Update nav label
+    const label = document.getElementById('ml-nav-label');
+    if (label) label.textContent = `${currentHighlightIndex + 1} / ${highlighted.length}`;
+    // Show modal for this hit
+    showModal({ memory: mark.dataset.memory, score: parseFloat(mark.dataset.score) });
+  }
 }
 
 // ── Modal de cita ─────────────────────────────────────────────────────────────
