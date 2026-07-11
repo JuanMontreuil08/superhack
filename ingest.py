@@ -57,44 +57,6 @@ def save_memory(content: str, custom_id: str) -> bool:
         return False
 
 
-async def fetch_profile(client: httpx.AsyncClient) -> dict:
-    try:
-        resp = await client.get("https://api.github.com/user")
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return {}
-
-
-async def fetch_orgs(client: httpx.AsyncClient) -> list[dict]:
-    try:
-        resp = await client.get("https://api.github.com/user/orgs", params={"per_page": 100})
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return []
-
-
-async def fetch_org_detail(client: httpx.AsyncClient, org_login: str) -> dict:
-    try:
-        resp = await client.get(f"https://api.github.com/orgs/{org_login}")
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return {}
-
-
-async def fetch_org_repos(client: httpx.AsyncClient, org_login: str) -> list[dict]:
-    try:
-        resp = await client.get(
-            f"https://api.github.com/orgs/{org_login}/repos",
-            params={"per_page": 20, "sort": "updated"},
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return []
-
 
 async def fetch_starred(client: httpx.AsyncClient) -> list[dict]:
     try:
@@ -111,7 +73,7 @@ async def fetch_starred(client: httpx.AsyncClient) -> list[dict]:
 async def fetch_repos(client: httpx.AsyncClient) -> list[dict]:
     resp = await client.get(
         "https://api.github.com/user/repos",
-        params={"sort": "pushed", "per_page": 100, "affiliation": "owner,collaborator,organization_member"},
+        params={"sort": "pushed", "per_page": 100, "affiliation": "owner"},
     )
     resp.raise_for_status()
     return resp.json()
@@ -194,90 +156,42 @@ async def main():
     stats = {"repos": 0, "commits": 0, "issues": 0, "prs": 0, "readmes": 0}
 
     async with httpx.AsyncClient(headers=GITHUB_HEADERS, timeout=15.0) as client:
-        # ── Perfil ─────────────────────────────────────────────────────────
-        print("👤 Fetching profile...")
-        profile = await fetch_profile(client)
-        if profile:
-            name = profile.get("name") or GITHUB_USERNAME
-            bio = profile.get("bio") or ""
-            company = profile.get("company") or ""
-            location = profile.get("location") or ""
-            blog = profile.get("blog") or ""
-            followers = profile.get("followers", 0)
-            following = profile.get("following", 0)
-            public_repos = profile.get("public_repos", 0)
-
-            orgs = await fetch_orgs(client)
-            org_names = ", ".join(o.get("login", "") for o in orgs) or "ninguna"
-
-            profile_text = (
-                f"Perfil de GitHub: {name} (@{GITHUB_USERNAME}). "
-                + (f"Bio: {bio}. " if bio else "")
-                + (f"Trabaja en: {company}. " if company else "")
-                + (f"Ubicación: {location}. " if location else "")
-                + (f"Sitio web: {blog}. " if blog else "")
-                + f"Seguidores: {followers}. Siguiendo: {following}. "
-                + f"Repos públicos: {public_repos}. "
-                + f"Organizaciones: {org_names}."
-            )
-            if save_memory(profile_text, f"profile_{GITHUB_USERNAME}"):
-                print(f"  ✓ perfil guardado")
-                print(f"    bio: {bio or '(vacía)'}")
-                print(f"    empresa: {company or '(ninguna)'}")
-                print(f"    orgs: {org_names}")
-
-        # ── Orgs detalle ───────────────────────────────────────────────────
-        if orgs:
-            print("\n🏢 Fetching org details...")
-            for org in orgs:
-                login = org.get("login", "")
-                detail = await fetch_org_detail(client, login)
-                org_repos = await fetch_org_repos(client, login)
-
-                name = detail.get("name") or login
-                desc = detail.get("description") or ""
-                email = detail.get("email") or ""
-                public_repos_count = detail.get("public_repos", 0)
-
-                repo_summaries = []
-                for r in org_repos:
-                    r_name = r.get("name", "")
-                    r_desc = r.get("description") or ""
-                    r_lang = r.get("language") or ""
-                    if r_desc:
-                        repo_summaries.append(f"{r_name} ({r_lang}): {r_desc}")
-                    else:
-                        repo_summaries.append(f"{r_name} ({r_lang})")
-
-                org_text = (
-                    f"El usuario pertenece a la organización GitHub '{name}' (@{login}). "
-                    + (f"Descripción: {desc}. " if desc else "")
-                    + (f"Email: {email}. " if email else "")
-                    + f"Repos públicos: {public_repos_count}. "
-                    + ("Proyectos: " + "; ".join(repo_summaries[:10]) + "." if repo_summaries else "")
-                )
-
-                safe_login = sanitize_id(login)
-                if save_memory(org_text, f"org_{safe_login}"):
-                    print(f"  ✓ org: {name} ({public_repos_count} repos)")
-                    for s in repo_summaries[:3]:
-                        print(f"    · {s[:80]}")
-
         # ── Repos ──────────────────────────────────────────────────────────
         print("\n📦 Fetching repos...")
         repos = await fetch_repos(client)
         print(f"   {len(repos)} repos encontrados\n")
 
+        # Solo filtra si el mensaje COMPLETO es una de estas palabras (no si empieza con ellas)
+        GENERIC_COMMITS = {"fix", "update", "wip", "init", "merge", "chore", "bump", "minor", "typo", "cleanup", "fix bug", "update readme", "initial commit", "first commit"}
+
         for repo in repos:
             name = repo["name"]
             full_name = repo["full_name"]  # "owner/repo"
             safe_name = sanitize_id(full_name.replace("/", "-"))
-            desc = repo.get("description") or "sin descripción"
+            desc = repo.get("description") or ""
             lang = repo.get("language") or "desconocido"
-            topics = ", ".join(repo.get("topics", [])) or "ninguno"
+            topics = ", ".join(repo.get("topics", [])) or ""
             stars = repo.get("stargazers_count", 0)
             pushed = format_date(repo.get("pushed_at", ""))
             is_fork = repo.get("fork", False)
+
+            # Saltar repos sin descripción ni topics — poco valor semántico
+            if not desc and not topics:
+                print(f"  ✗ skip repo: {full_name} (sin descripción ni topics)")
+                # Igual guardamos sus commits si los tiene
+                commits = await fetch_commits(client, full_name)
+                for commit in commits:
+                    sha = commit.get("sha", "")[:7]
+                    msg = commit.get("commit", {}).get("message", "").split("\n")[0][:150]
+                    date = format_date(commit.get("commit", {}).get("author", {}).get("date", ""))
+                    if not msg or len(msg) < 15 or msg.lower().strip() in GENERIC_COMMITS:
+                        continue
+                    commit_text = f"Commit en {name} ({date}): {msg}"
+                    if save_memory(commit_text, f"commit_{safe_name}_{sha}"):
+                        stats["commits"] += 1
+                if commits:
+                    print(f"    → {len([c for c in commits])} commits procesados")
+                continue
 
             # Repo base
             text = (
@@ -299,7 +213,7 @@ async def main():
                 sha = commit.get("sha", "")[:7]
                 msg = commit.get("commit", {}).get("message", "").split("\n")[0][:150]
                 date = format_date(commit.get("commit", {}).get("author", {}).get("date", ""))
-                if not msg:
+                if not msg or len(msg) < 15 or msg.lower().strip() in GENERIC_COMMITS:
                     continue
                 commit_text = f"Commit en {name} ({date}): {msg}"
                 if save_memory(commit_text, f"commit_{safe_name}_{sha}"):
@@ -361,18 +275,21 @@ async def main():
         # ── Starred repos ──────────────────────────────────────────────────
         print("\n⭐ Fetching starred repos...")
         starred = await fetch_starred(client)
-        for repo in starred:
+        for repo in starred[:20]:  # solo los 20 más recientes
             name = repo["full_name"]  # "owner/repo"
-            desc = repo.get("description") or "sin descripción"
+            desc = repo.get("description") or ""
+            # Saltar starred sin descripción
+            if not desc:
+                continue
             lang = repo.get("language") or "desconocido"
-            topics = ", ".join(repo.get("topics", [])) or "ninguno"
+            topics = ", ".join(repo.get("topics", [])) or ""
             stars = repo.get("stargazers_count", 0)
 
             text = (
                 f"El usuario ha marcado con estrella el repo {name}. "
                 f"Descripción: {desc}. "
                 f"Lenguaje: {lang}. "
-                f"Topics: {topics}. "
+                + (f"Topics: {topics}. " if topics else "")
                 f"Estrellas totales: {stars}."
             )
             safe_name = sanitize_id(name.replace("/", "-"))
@@ -390,9 +307,10 @@ async def main():
     print(f"   🐛 {stats['issues']} issues guardados")
     print(f"   🔀 {stats['prs']} pull requests guardados")
     print(f"   ⭐ {stats.get('starred', 0)} starred repos guardados")
-    print(f"   👤 perfil + orgs guardados")
     print(f"\n   containerTag: {CONTAINER_TAG}")
     print("=" * 50)
+
+    return stats
 
 
 if __name__ == "__main__":
