@@ -1,12 +1,11 @@
 """
 ingest.py — Ingesta actividad de GitHub en Supermemory Local.
 
-Qué guarda:
-  - Repos: nombre, descripción, lenguaje, topics, estrellas, última actividad
-  - Commits: últimos 20 por repo (mensaje + fecha)
-  - Issues: últimas 30 abiertas del usuario
-  - PRs: últimas 20 del usuario
-  - READMEs: primeros 500 chars por repo
+Arquitectura:
+  Por cada repo propio (no fork, no perfil):
+    1. Fetch commits del usuario + README
+    2. Gemini sintetiza hasta 3 memorias de skills específicas
+    3. Se guardan en Supermemory
 
 Uso:
   python3 ingest.py
@@ -14,7 +13,9 @@ Uso:
 
 import asyncio
 import base64
+import json
 import os
+import re
 from datetime import datetime
 
 import httpx
@@ -28,6 +29,7 @@ GITHUB_USERNAME = os.getenv("GITHUB_USERNAME", "")
 SUPERMEMORY_URL = os.getenv("SUPERMEMORY_BASE_URL", "http://localhost:6767")
 SUPERMEMORY_API_KEY = os.getenv("SUPERMEMORY_API_KEY", "")
 CONTAINER_TAG = os.getenv("SUPERMEMORY_CONTAINER", "hackathon_test_user")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 GITHUB_HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}",
@@ -37,14 +39,30 @@ GITHUB_HEADERS = {
 
 memory_client = Supermemory(api_key=SUPERMEMORY_API_KEY, base_url=SUPERMEMORY_URL)
 
+GENERIC_COMMITS = {
+    "fix", "update", "wip", "init", "merge", "chore", "bump", "minor",
+    "typo", "cleanup", "fix bug", "update readme", "initial commit",
+    "first commit", "add files", "test", "temp", "todo", "refactor",
+    "clean", "remove", "delete",
+}
+
 
 def sanitize_id(s: str) -> str:
-    """Reemplaza caracteres inválidos en custom_id con guiones."""
     return "".join(c if c.isalnum() or c in "-_:" else "-" for c in s)
 
 
+def strip_markdown(text: str) -> str:
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r'#{1,6}\s*', '', text)
+    text = re.sub(r'[-*_]{3,}', '', text)
+    text = re.sub(r'`{1,3}[^`]*`{1,3}', '', text)
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
 def save_memory(content: str, custom_id: str) -> bool:
-    """Guarda un texto en Supermemory. Retorna True si fue exitoso."""
     try:
         memory_client.add(
             content=content,
@@ -57,19 +75,6 @@ def save_memory(content: str, custom_id: str) -> bool:
         return False
 
 
-
-async def fetch_starred(client: httpx.AsyncClient) -> list[dict]:
-    try:
-        resp = await client.get(
-            f"https://api.github.com/users/{GITHUB_USERNAME}/starred",
-            params={"per_page": 100},
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return []
-
-
 async def fetch_repos(client: httpx.AsyncClient) -> list[dict]:
     resp = await client.get(
         "https://api.github.com/user/repos",
@@ -79,60 +84,35 @@ async def fetch_repos(client: httpx.AsyncClient) -> list[dict]:
     return resp.json()
 
 
-async def fetch_commits(client: httpx.AsyncClient, repo_full_name: str) -> list[dict]:
+async def fetch_commits(client: httpx.AsyncClient, repo_full_name: str) -> list[str]:
     try:
         resp = await client.get(
             f"https://api.github.com/repos/{repo_full_name}/commits",
-            params={"per_page": 100, "author": GITHUB_USERNAME},
+            params={"per_page": 50, "author": GITHUB_USERNAME},
         )
-        if resp.status_code == 409:  # empty repo
+        if resp.status_code == 409:
             return []
         resp.raise_for_status()
-        return resp.json()
+        msgs = []
+        for c in resp.json():
+            msg = c.get("commit", {}).get("message", "").split("\n")[0][:150]
+            if msg and len(msg) >= 15 and msg.lower().strip() not in GENERIC_COMMITS:
+                msgs.append(msg)
+        return msgs
     except Exception:
         return []
 
 
 async def fetch_readme(client: httpx.AsyncClient, repo_full_name: str) -> str:
     try:
-        resp = await client.get(
-            f"https://api.github.com/repos/{repo_full_name}/readme"
-        )
+        resp = await client.get(f"https://api.github.com/repos/{repo_full_name}/readme")
         if resp.status_code != 200:
             return ""
         data = resp.json()
         content = base64.b64decode(data.get("content", "")).decode("utf-8", errors="ignore")
-        return content[:500].strip()
+        return strip_markdown(content)[:1200].strip()
     except Exception:
         return ""
-
-
-async def fetch_issues(client: httpx.AsyncClient) -> list[dict]:
-    try:
-        resp = await client.get(
-            "https://api.github.com/issues",
-            params={"state": "open", "per_page": 30, "filter": "created"},
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return []
-
-
-async def fetch_prs(client: httpx.AsyncClient) -> list[dict]:
-    try:
-        resp = await client.get(
-            "https://api.github.com/search/issues",
-            params={
-                "q": f"author:{GITHUB_USERNAME} type:pr",
-                "sort": "updated",
-                "per_page": 20,
-            },
-        )
-        resp.raise_for_status()
-        return resp.json().get("items", [])
-    except Exception:
-        return []
 
 
 def format_date(iso: str) -> str:
@@ -142,6 +122,87 @@ def format_date(iso: str) -> str:
         return iso[:10] if iso else "unknown"
 
 
+async def gemini_synthesize(repo_name: str, lang: str, readme: str, commits: list[str]) -> list[str]:
+    """
+    Llama a Gemini para sintetizar hasta 3 memorias de skills desde README + commits.
+    Retorna lista de strings (memorias limpias).
+    """
+    if not GEMINI_API_KEY:
+        # Fallback sin LLM: 1 memoria básica
+        parts = [f"{GITHUB_USERNAME} has experience building {repo_name}"]
+        if lang and lang.lower() not in ("desconocido", "unknown"):
+            parts.append(f" using {lang}")
+        if readme:
+            parts.append(f". {readme[:200]}")
+        if commits:
+            parts.append(f" Recent commits: {', '.join(commits[:3])}.")
+        return ["".join(parts)]
+
+    commits_text = "\n".join(f"- {c}" for c in commits[:15]) if commits else "No commits available"
+    readme_text = readme[:800] if readme else "No README available"
+
+    prompt = f"""You are extracting skill evidence from a developer's GitHub repository for semantic search.
+
+Developer: {GITHUB_USERNAME}
+Repository: {repo_name}
+Primary language: {lang or "unknown"}
+
+README:
+{readme_text}
+
+Commits by the developer:
+{commits_text}
+
+Write 1 to 3 short skill memories (plain sentences, no markdown, no bullets).
+Each memory should focus on a DIFFERENT technical skill or aspect of this project.
+Use third person starting with "{GITHUB_USERNAME}".
+Be specific: name technologies, frameworks, patterns, problems solved.
+Ignore non-technical content (achievements, awards, personal info).
+If there is not enough technical content, write only 1 memory.
+
+Return ONLY a JSON array of strings, no explanation. Example:
+["memory 1", "memory 2", "memory 3"]"""
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
+                },
+            )
+            data = resp.json()
+            if "error" in data:
+                print(f"  ⚠ Gemini API error para {repo_name}: {data['error'].get('message', data['error'])}")
+            elif "candidates" not in data:
+                print(f"  ⚠ Gemini respuesta inesperada para {repo_name}: {str(data)[:200]}")
+            else:
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Strip markdown code fences if present
+                text_clean = re.sub(r'```(?:json)?\s*', '', text).strip()
+                match = re.search(r'\[.*\]', text_clean, re.DOTALL)
+                if match:
+                    try:
+                        memories = json.loads(match.group())
+                        result = [m.strip() for m in memories if isinstance(m, str) and len(m) > 20][:3]
+                        if result:
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                print(f"  ⚠ Gemini no retornó JSON válido para {repo_name}: {text[:100]}")
+    except Exception as e:
+        print(f"  ⚠ Gemini exception para {repo_name}: {e}")
+
+    # Fallback si Gemini falla
+    fallback = f"{GITHUB_USERNAME} has experience building {repo_name}"
+    if lang and lang.lower() not in ("desconocido", "unknown"):
+        fallback += f" using {lang}"
+    if commits:
+        fallback += f". Recent work: {commits[0]}"
+    return [fallback]
+
+
 async def main():
     if not GITHUB_TOKEN:
         print("✗ Falta GITHUB_TOKEN en .env.local")
@@ -149,171 +210,67 @@ async def main():
     if not GITHUB_USERNAME:
         print("✗ Falta GITHUB_USERNAME en .env.local")
         return
+    if not GEMINI_API_KEY:
+        print("⚠ GEMINI_API_KEY no configurado — usando fallback sin LLM")
 
     print(f"Iniciando ingesta de GitHub para @{GITHUB_USERNAME}")
     print(f"Supermemory: {SUPERMEMORY_URL} | containerTag: {CONTAINER_TAG}\n")
 
-    stats = {"repos": 0, "commits": 0, "issues": 0, "prs": 0, "readmes": 0}
+    stats = {"repos": 0, "memories": 0, "skipped_forks": 0, "skipped_empty": 0}
 
     async with httpx.AsyncClient(headers=GITHUB_HEADERS, timeout=15.0) as client:
-        # ── Repos ──────────────────────────────────────────────────────────
-        print("\n📦 Fetching repos...")
+        print("📦 Fetching repos...")
         repos = await fetch_repos(client)
         print(f"   {len(repos)} repos encontrados\n")
 
-        # Solo filtra si el mensaje COMPLETO es una de estas palabras (no si empieza con ellas)
-        GENERIC_COMMITS = {"fix", "update", "wip", "init", "merge", "chore", "bump", "minor", "typo", "cleanup", "fix bug", "update readme", "initial commit", "first commit"}
-
         for repo in repos:
             name = repo["name"]
-            full_name = repo["full_name"]  # "owner/repo"
+            full_name = repo["full_name"]
             safe_name = sanitize_id(full_name.replace("/", "-"))
-            desc = repo.get("description") or ""
-            lang = repo.get("language") or "desconocido"
-            topics = ", ".join(repo.get("topics", [])) or ""
-            stars = repo.get("stargazers_count", 0)
-            pushed = format_date(repo.get("pushed_at", ""))
             is_fork = repo.get("fork", False)
-
-            # Sin descripción ni topics: intentar README antes de continuar
-            if not desc and not topics:
-                readme = await fetch_readme(client, full_name)
-                if readme:
-                    readme_text = f"README de {name}:\n{readme}"
-                    if save_memory(readme_text, f"readme_{safe_name}"):
-                        stats["readmes"] += 1
-                        print(f"  ✓ readme: {full_name} (sin desc pero tiene README)")
-                else:
-                    print(f"  ✗ skip: {full_name} (sin desc, topics ni README)")
-                commits = await fetch_commits(client, full_name)
-                for commit in commits:
-                    sha = commit.get("sha", "")[:7]
-                    msg = commit.get("commit", {}).get("message", "").split("\n")[0][:150]
-                    date = format_date(commit.get("commit", {}).get("author", {}).get("date", ""))
-                    if not msg or len(msg) < 15 or msg.lower().strip() in GENERIC_COMMITS:
-                        continue
-                    commit_text = f"Commit en {name} ({date}): {msg}"
-                    if save_memory(commit_text, f"commit_{safe_name}_{sha}"):
-                        stats["commits"] += 1
-                if commits:
-                    print(f"    → commits guardados")
-                continue
-
-            # Repo base
-            text = (
-                f"GitHub repo: {full_name}. "
-                f"Descripción: {desc}. "
-                f"Lenguaje principal: {lang}. "
-                f"Topics: {topics}. "
-                f"Estrellas: {stars}. "
-                f"Última actividad: {pushed}."
-                + (" (fork)" if is_fork else "")
-            )
-            if save_memory(text, f"repo_{safe_name}"):
-                stats["repos"] += 1
-                print(f"  ✓ repo: {full_name} ({lang}){' [fork]' if is_fork else ''}")
-
-            # Commits
-            commits = await fetch_commits(client, full_name)
-            for commit in commits:
-                sha = commit.get("sha", "")[:7]
-                msg = commit.get("commit", {}).get("message", "").split("\n")[0][:150]
-                date = format_date(commit.get("commit", {}).get("author", {}).get("date", ""))
-                if not msg or len(msg) < 15 or msg.lower().strip() in GENERIC_COMMITS:
-                    continue
-                commit_text = f"Commit en {name} ({date}): {msg}"
-                if save_memory(commit_text, f"commit_{safe_name}_{sha}"):
-                    stats["commits"] += 1
-
-            if commits:
-                print(f"    → {len(commits)} commits guardados")
-
-            # README
-            readme = await fetch_readme(client, full_name)
-            if readme:
-                readme_text = f"README de {name}:\n{readme}"
-                if save_memory(readme_text, f"readme_{safe_name}"):
-                    stats["readmes"] += 1
-                    print(f"    → README guardado ({len(readme)} chars)")
-
-        # ── Issues ─────────────────────────────────────────────────────────
-        print("\n🐛 Fetching issues...")
-        issues = await fetch_issues(client)
-        for issue in issues:
-            repo_url = issue.get("repository_url", "")
-            repo_name = repo_url.split("/")[-1] if repo_url else "unknown"
-            title = issue.get("title", "")
-            labels = ", ".join(l["name"] for l in issue.get("labels", []))
-            body = (issue.get("body") or "")[:200].replace("\n", " ")
-            number = issue.get("number", "")
-
-            text = f"Issue #{number} en {repo_name}: {title}."
-            if labels:
-                text += f" Labels: {labels}."
-            if body:
-                text += f" {body}"
-
-            if save_memory(text, f"issue_{repo_name}_{number}"):
-                stats["issues"] += 1
-
-        print(f"   {stats['issues']} issues guardados")
-
-        # ── PRs ────────────────────────────────────────────────────────────
-        print("\n🔀 Fetching pull requests...")
-        prs = await fetch_prs(client)
-        for pr in prs:
-            title = pr.get("title", "")
-            state = pr.get("state", "")
-            repo_url = pr.get("repository_url", "")
-            repo_name = repo_url.split("/")[-1] if repo_url else "unknown"
-            number = pr.get("number", "")
-            body = (pr.get("body") or "")[:200].replace("\n", " ")
-
-            text = f"Pull Request #{number} en {repo_name}: {title}. Estado: {state}."
-            if body:
-                text += f" {body}"
-
-            if save_memory(text, f"pr_{repo_name}_{number}"):
-                stats["prs"] += 1
-
-        print(f"   {stats['prs']} PRs guardados")
-
-        # ── Starred repos ──────────────────────────────────────────────────
-        print("\n⭐ Fetching starred repos...")
-        starred = await fetch_starred(client)
-        for repo in starred[:20]:  # solo los 20 más recientes
-            name = repo["full_name"]  # "owner/repo"
-            desc = repo.get("description") or ""
-            # Saltar starred sin descripción
-            if not desc:
-                continue
             lang = repo.get("language") or "desconocido"
-            topics = ", ".join(repo.get("topics", [])) or ""
-            stars = repo.get("stargazers_count", 0)
+            pushed = format_date(repo.get("pushed_at", ""))
 
-            text = (
-                f"El usuario ha marcado con estrella el repo {name}. "
-                f"Descripción: {desc}. "
-                f"Lenguaje: {lang}. "
-                + (f"Topics: {topics}. " if topics else "")
-                + f"Estrellas totales: {stars}."
+            # Saltar forks y repo de perfil
+            if is_fork or name.lower() == GITHUB_USERNAME.lower():
+                stats["skipped_forks"] += 1
+                print(f"  ⏭ skip: {full_name}")
+                continue
+
+            # Fetch commits + README en paralelo
+            commits, readme = await asyncio.gather(
+                fetch_commits(client, full_name),
+                fetch_readme(client, full_name),
             )
-            safe_name = sanitize_id(name.replace("/", "-"))
-            if save_memory(text, f"starred_{safe_name}"):
-                stats["starred"] = stats.get("starred", 0) + 1
 
-        print(f"   {stats.get('starred', 0)} starred repos guardados")
+            # Saltar repos sin ningún contexto útil
+            if not commits and not readme:
+                stats["skipped_empty"] += 1
+                print(f"  ✗ skip: {full_name} (sin commits ni README)")
+                continue
 
-    # ── Resumen ────────────────────────────────────────────────────────────
+            print(f"  🤖 Procesando: {full_name} ({lang}, {len(commits)} commits, README: {'sí' if readme else 'no'})")
+
+            # Gemini sintetiza hasta 3 memorias
+            memories = await gemini_synthesize(name, lang, readme, commits)
+            # gemini_synthesize retorna lista vacía solo si usó fallback
+            source = "Gemini ✨" if len(memories) > 1 or (memories and "Recent work" not in memories[0]) else "fallback"
+            print(f"    → {len(memories)} memorias via {source}")
+
+            for i, mem in enumerate(memories):
+                custom_id = f"mem_{safe_name}_{i}"
+                if save_memory(mem, custom_id):
+                    stats["memories"] += 1
+                    print(f"    ✓ [{i+1}] {mem[:100]}")
+
+            stats["repos"] += 1
+
     print("\n" + "=" * 50)
     print("✅ Ingesta completa:")
-    total_repos = stats['repos'] + stats['readmes']
-    print(f"   📦 {total_repos} repositorios procesados ({stats['repos']} con desc + {stats['readmes']} via README)")
-    print(f"   📝 {stats['commits']} commits almacenados")
-    print(f"   📖 {stats['readmes']} READMEs guardados")
-    print(f"   🐛 {stats['issues']} issues guardados")
-    print(f"   🔀 {stats['prs']} pull requests guardados")
-    print(f"   ⭐ {stats.get('starred', 0)} starred repos guardados")
+    print(f"   📦 {stats['repos']} repos procesados")
+    print(f"   🧠 {stats['memories']} memorias generadas por Gemini")
+    print(f"   ⏭ {stats['skipped_forks']} forks/perfil saltados")
+    print(f"   ✗  {stats['skipped_empty']} repos sin contexto saltados")
     print(f"\n   containerTag: {CONTAINER_TAG}")
     print("=" * 50)
 

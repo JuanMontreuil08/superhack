@@ -170,16 +170,16 @@ async function handleSync() {
     const data = await r.json();
 
     if (data.ok) {
-      const total = (data.repos || 0) + (data.commits || 0) + (data.readmes || 0) + (data.starred || 0) + (data.prs || 0);
+      const total = (data.repos || 0) + (data.commits || 0) + (data.readmes || 0);
       btn.textContent = '⏳ Procesando memorias...';
       // Expandir panel para mostrar progreso
       const panel = document.getElementById(PANEL_ID);
       if (panel) panel.style.width = '300px';
       status.innerHTML = `
         <div style="color:#3fb950;line-height:1.8;margin-bottom:10px;font-size:12px">
-          📦 ${data.repos} repos guardados<br>
-          📝 ${data.commits} commits almacenados<br>
-          📖 ${data.readmes} READMEs · ⭐ ${data.starred} starred
+          📦 ${data.repos} repos · 📖 ${data.readmes} READMEs<br>
+          📝 ${data.commits} commits<br>
+          <span style="color:#8b949e">⏭ ${data.skipped_forks || 0} forks saltados</span>
         </div>
         <div style="font-size:11px;color:#8b949e;margin-bottom:6px">Supermemory procesando ${total} fragmentos...</div>
         <div style="background:#21262d;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px">
@@ -210,13 +210,33 @@ function extractChunks() {
   const siteSelectors = {
     'twitter.com': '[data-testid="tweetText"]',
     'x.com': '[data-testid="tweetText"]',
-    'linkedin.com': '.feed-shared-update-v2__description, .feed-shared-text',
+    // Job detail pages + search results right panel + feed
+    'linkedin.com': [
+      '.jobs-description__content',
+      '.jobs-description-content__text',
+      '.jobs-description-content__text--stretch',
+      '#job-details',
+      '#job-details p, #job-details li, #job-details h2, #job-details h3',
+      '.description__text--rich',
+      '.jobs-box__html-content',
+      '.jobs-unified-top-card__job-title',
+      '.jobs-unified-top-card__primary-description',
+      '.job-details-jobs-unified-top-card__primary-description',
+      '.jobs-search__job-details--container p, .jobs-search__job-details--container li',
+      '.scaffold-layout__detail p, .scaffold-layout__detail li',
+      '.feed-shared-update-v2__description',
+      '.feed-shared-text',
+    ].join(', '),
     'reddit.com': '[data-click-id="text"] p, .Post h3',
   };
+  const GENERIC = 'p, h1, h2, h3, li, td, blockquote, article';
   const host = window.location.hostname.replace('www.', '');
   const siteSelector = Object.entries(siteSelectors).find(([k]) => host.includes(k))?.[1];
-  const selectors = siteSelector || 'p, h1, h2, h3, li, td, blockquote, article';
-  const elements = document.querySelectorAll(selectors);
+  let elements = siteSelector ? document.querySelectorAll(siteSelector) : null;
+  // Si los selectores site-specific no matchean nada, caer a genéricos
+  if (!elements || elements.length === 0) {
+    elements = document.querySelectorAll(GENERIC);
+  }
   const seen = new Set();
   const chunks = [];
 
@@ -370,7 +390,7 @@ function showModal(hit) {
       <button id="ml-modal-close" style="background:none;border:none;color:#8b949e;font-size:16px;cursor:pointer;padding:0;margin-left:8px">✕</button>
     </div>
     <div style="font-size:14px;color:#e6edf3;line-height:1.6;margin-bottom:12px">
-      "${hit.memory}"
+      "${(hit.memory || '').replace(/#+\s*/g, '').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').slice(0, 220)}${(hit.memory || '').length > 220 ? '...' : ''}"
     </div>
     <div style="font-size:11px;color:#8b949e;display:flex;align-items:center;gap:8px">
       <span style="background:#1f6feb;color:#fff;padding:2px 8px;border-radius:12px;font-weight:600">
