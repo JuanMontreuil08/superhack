@@ -7,6 +7,10 @@ const PANEL_ID = 'ml-panel';
 const MODAL_ID = 'ml-modal';
 
 // ── Estado ──────────────────────────────────────────────────────────────────
+const IS_PDF = document.contentType === 'application/pdf'
+  || window.location.href.toLowerCase().split('?')[0].endsWith('.pdf')
+  || /^https?:\/\/arxiv\.org\/pdf\//i.test(window.location.href);
+
 let active = false;
 let highlighted = [];
 let currentHighlightIndex = -1;
@@ -63,23 +67,25 @@ function injectPanel() {
       cursor:pointer;margin-bottom:12px;transition:background 0.2s
     ">🔄 Sync GitHub Activity</button>
     <div id="ml-sync-status" style="font-size:12px;color:#8b949e;min-height:20px"></div>
-    <hr style="border-color:#30363d;margin:16px 0">
-    <button id="ml-analyze-btn" style="
-      width:100%;padding:10px;background:#1f6feb;color:#fff;
-      border:none;border-radius:8px;font-size:13px;font-weight:600;
-      cursor:pointer;transition:background 0.2s
-    ">🔍 Analizar esta página</button>
-    <div id="ml-analyze-status" style="font-size:12px;color:#8b949e;margin-top:8px;min-height:20px"></div>
-    <div id="ml-nav" style="display:none;align-items:center;gap:8px;margin-top:8px">
-      <span id="ml-nav-label" style="font-size:12px;color:#e6edf3;flex:1"></span>
-      <button id="ml-nav-up" title="Anterior" style="
-        background:#21262d;border:1px solid #30363d;color:#e6edf3;
-        border-radius:6px;padding:4px 10px;font-size:14px;cursor:pointer;line-height:1
-      ">↑</button>
-      <button id="ml-nav-down" title="Siguiente" style="
-        background:#21262d;border:1px solid #30363d;color:#e6edf3;
-        border-radius:6px;padding:4px 10px;font-size:14px;cursor:pointer;line-height:1
-      ">↓</button>
+    <hr style="border-color:#30363d;margin:12px 0">
+    <div id="ml-messages" style="
+      height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;
+      padding-right:4px;margin-bottom:10px;
+    ">
+      <div style="font-size:12px;color:#8b949e;text-align:center;margin-top:8px">
+        Pregúntame sobre esta página o sobre tu background
+      </div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <input id="ml-chat-input" placeholder="¿Qué quieres saber?" style="
+        flex:1;background:#0d1117;border:1px solid #30363d;border-radius:8px;
+        color:#e6edf3;font-size:13px;padding:8px 10px;outline:none;
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      "/>
+      <button id="ml-send-btn" style="
+        background:#1f6feb;border:none;border-radius:8px;color:#fff;
+        font-size:16px;padding:8px 12px;cursor:pointer;flex-shrink:0;
+      ">→</button>
     </div>
   `;
   panel.style.cssText = `
@@ -87,7 +93,7 @@ function injectPanel() {
     bottom: 84px;
     right: 24px;
     z-index: 2147483646;
-    width: 280px;
+    width: 300px;
     background: #161b22;
     color: #e6edf3;
     border: 1px solid #30363d;
@@ -104,9 +110,10 @@ function injectPanel() {
 
   document.getElementById('ml-panel-close').addEventListener('click', closePanel);
   document.getElementById('ml-sync-btn').addEventListener('click', handleSync);
-  document.getElementById('ml-analyze-btn').addEventListener('click', analyzePage);
-  document.getElementById('ml-nav-up').addEventListener('click', () => navigateHighlight(-1));
-  document.getElementById('ml-nav-down').addEventListener('click', () => navigateHighlight(1));
+  document.getElementById('ml-send-btn').addEventListener('click', handleChat);
+  document.getElementById('ml-chat-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleChat(); }
+  });
 
   // Animar entrada
   requestAnimationFrame(() => {
@@ -170,18 +177,18 @@ async function handleSync() {
     const data = await r.json();
 
     if (data.ok) {
-      const total = (data.repos || 0) + (data.commits || 0) + (data.readmes || 0);
+      const total = data.memories || 0;
       btn.textContent = '⏳ Procesando memorias...';
       // Expandir panel para mostrar progreso
       const panel = document.getElementById(PANEL_ID);
       if (panel) panel.style.width = '300px';
       status.innerHTML = `
         <div style="color:#3fb950;line-height:1.8;margin-bottom:10px;font-size:12px">
-          📦 ${data.repos} repos · 📖 ${data.readmes} READMEs<br>
-          📝 ${data.commits} commits<br>
+          📦 ${data.repos} repos procesados<br>
+          🧠 ${data.memories} memorias generadas por Gemini<br>
           <span style="color:#8b949e">⏭ ${data.skipped_forks || 0} forks saltados</span>
         </div>
-        <div style="font-size:11px;color:#8b949e;margin-bottom:6px">Supermemory procesando ${total} fragmentos...</div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:6px">Supermemory indexando ${total} memorias...</div>
         <div style="background:#21262d;border-radius:4px;height:8px;overflow:hidden;margin-bottom:4px">
           <div id="ml-queue-fill" style="background:#1f6feb;height:100%;width:5%;transition:width 0.8s ease"></div>
         </div>
@@ -452,7 +459,7 @@ async function pollQueueStatus(total) {
         clearInterval(interval);
         fill.style.width = '100%';
         fill.style.background = '#3fb950';
-        label.innerHTML = `✅ <strong style="color:#3fb950">${total} fragmentos listos</strong> · Analiza la página ahora`;
+        label.innerHTML = `✅ <strong style="color:#3fb950">${total} memorias listas</strong> · Analiza la página ahora`;
         if (btn) { btn.textContent = '🔄 Sync GitHub Activity'; btn.disabled = false; }
       } else {
         label.textContent = `Procesando... ${done}/${total} listos (${pending} en cola)`;
@@ -461,6 +468,135 @@ async function pollQueueStatus(total) {
       clearInterval(interval);
     }
   }, 3000);
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+function addMessage(role, text) {
+  const messages = document.getElementById('ml-messages');
+  if (!messages) return;
+
+  const isUser = role === 'user';
+  const bubble = document.createElement('div');
+  bubble.style.cssText = `
+    max-width:90%;align-self:${isUser ? 'flex-end' : 'flex-start'};
+    background:${isUser ? '#1f6feb' : '#21262d'};
+    color:#e6edf3;border-radius:${isUser ? '12px 12px 4px 12px' : '12px 12px 12px 4px'};
+    padding:8px 12px;font-size:13px;line-height:1.5;word-break:break-word;
+  `;
+  bubble.textContent = text;
+  messages.appendChild(bubble);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function getPageContext() {
+  if (IS_PDF) return `PDF: ${window.location.href}`;
+  const title = document.title || '';
+  const chunks = extractChunks().slice(0, 5).map(c => c.text).join(' ');
+  return `${title}\n${chunks}`.slice(0, 600);
+}
+
+async function handleChat() {
+  const input = document.getElementById('ml-chat-input');
+  const sendBtn = document.getElementById('ml-send-btn');
+  if (!input) return;
+
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = '';
+  addMessage('user', question);
+
+  // Placeholder de typing
+  const messages = document.getElementById('ml-messages');
+  const typing = document.createElement('div');
+  typing.style.cssText = 'align-self:flex-start;color:#8b949e;font-size:13px;padding:4px 8px;';
+  typing.textContent = '⏳ Buscando en tu memoria...';
+  if (messages) messages.appendChild(typing);
+  if (sendBtn) sendBtn.disabled = true;
+
+  try {
+    const r = await fetch(`${BACKEND}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, page_context: getPageContext() }),
+    });
+    const data = await r.json();
+    typing.remove();
+    addMessage('assistant', data.answer || 'Sin respuesta');
+  } catch (e) {
+    typing.remove();
+    addMessage('assistant', '❌ Error conectando al backend');
+  } finally {
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+// ── Analizar PDF ──────────────────────────────────────────────────────────────
+async function analyzePDF() {
+  const btn = document.getElementById('ml-analyze-btn');
+  const status = document.getElementById('ml-analyze-status');
+  const resultsEl = document.getElementById('ml-pdf-results');
+  if (!btn || !status) return;
+
+  btn.disabled = true;
+  btn.textContent = '⏳ Extrayendo texto...';
+  status.textContent = 'El backend descarga y parsea el PDF...';
+  if (resultsEl) { resultsEl.innerHTML = ''; resultsEl.style.display = 'none'; }
+
+  try {
+    const r = await fetch(`${BACKEND}/analyze-pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: window.location.href }),
+    });
+    const data = await r.json();
+    const hits = data.highlights || [];
+
+    if (!hits.length) {
+      status.textContent = 'Sin fragmentos relevantes para tu contexto en este PDF.';
+    } else {
+      status.textContent = `✨ ${hits.length} fragmentos relevantes`;
+      showPDFResults(hits);
+    }
+  } catch (e) {
+    status.textContent = '❌ Error conectando al backend';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '📄 Analizar este PDF';
+  }
+}
+
+function showPDFResults(hits) {
+  const resultsEl = document.getElementById('ml-pdf-results');
+  if (!resultsEl) return;
+
+  resultsEl.innerHTML = '';
+  resultsEl.style.display = 'flex';
+
+  for (const hit of hits) {
+    const memText = (hit.memory || '')
+      .replace(/#+\s*/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .slice(0, 180);
+    const excerpt = (hit.text || '').slice(0, 140);
+
+    const card = document.createElement('div');
+    card.style.cssText = `
+      background:#0d1117;border:1px solid #30363d;border-radius:8px;
+      padding:10px 12px;font-size:12px;line-height:1.5;
+    `;
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="color:#8b949e;font-size:11px">Pág. ${hit.page}</span>
+        <span style="background:#1f6feb;color:#fff;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600">
+          ${Math.round(hit.score * 100)}%
+        </span>
+      </div>
+      <div style="color:#c9d1d9;margin-bottom:8px;font-style:italic">"${excerpt}${hit.text.length > 140 ? '…' : ''}"</div>
+      <div style="color:#3fb950;font-size:11px">💡 ${memText}${hit.memory.length > 180 ? '…' : ''}</div>
+    `;
+    resultsEl.appendChild(card);
+  }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
